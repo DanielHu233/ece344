@@ -1,8 +1,10 @@
 #include "common.h"
 
+
 int
 main()
 {
-	TBD();
+	//TBD();
+    printf("Hello world\n");
 	return 0;
 }
