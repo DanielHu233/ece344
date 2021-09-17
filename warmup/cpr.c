@@ -17,32 +17,38 @@ usage()
 }
 
 //the function that copies the file from pathName to destName, return 1 for fail, 0 for success
-int file_cp (const char* pathName, const char* destName){
+int file_cp (char* pathName, char* destName){
     
     //open the source file , flag is read only
-    int fd, flags = O_RDONLY;
-    fd = open(pathName, flags);
+    int fd;
+    fd = open(pathName, O_RDONLY);
     if(fd < 0){
         syserror(open, pathName);
     }
     
     //open the destination file
-    int destFd = open(destName, O_CREAT);
+    int destFd = open(destName, O_RDWR|O_CREAT);
     if(destFd < 0){
         syserror(creat, destName);
     }
     
+    //copy permission
+    struct stat buffer;
+    stat(pathName, &buffer);
+    
+    chmod(destName, buffer.st_mode);
+    
     //read the source file and write to destination
-    int readNum = 1;
-    while(readNum != 0){      
+    char buf[1024];
+    int readNum;
+    while((readNum = read(fd, buf, sizeof(buf)))){      
         //read the source file
-        char buf[4096];
-        readNum = read(fd, buf, 4096);
+        //readNum = read(fd, buf, 4096);
         //write to destination
-        int size_written = write(destFd, buf, 4096);
-        if(size_written != readNum){
+        write(destFd, buf, readNum);
+        /*if(size_written != readNum){
             printf("Not correctly copied\n");
-        }
+        }*/
     }
     
     //close two files
@@ -58,52 +64,75 @@ int file_cp (const char* pathName, const char* destName){
     return 0;
 }
 
-void recursive_cp(const char* sourceName, const char* destName){
-    //need to copy the permission of the source dir or file to the destination
-    struct stat buffer;
-    int stat_res = stat(sourceName, &buffer);
-    if(stat_res != 0){
-        syserror(stat, sourceName);
+char* str_contact(char* string1, char* string2){
+    char* output;
+    output = (char*)malloc(strlen(string1) + strlen(string2) + 1);
+    strcat(output, string1);
+    strcat(output, string2);
+    return output;
+}
+
+int checkDir(char* pathName){
+    struct stat checker;
+    stat(pathName, &checker);
+    
+    if(S_ISDIR(checker.st_mode)){
+        return 1;
+    }else{
+        return 0;
     }
-    //if currently is a dir
-    if(S_ISDIR(buffer.st_mode)){
-        //recursive_cp()
+}
+
+void recursive_cp(char* sourceName, char* destName){
+        //need to copy the permission of the source dir or file to the destination
+        struct stat buffer;
+        stat(sourceName, &buffer);
+        //printf("%x", buffer.st_mode);
+        
+        //copy the home dir
+        int make_success = mkdir(destName, 0777);
+        if(make_success == -1){
+            syserror(mkdir, destName);
+            //exit(1);
+        }
+        
+        //chmod(destName, buffer.st_mode);
+        
         //now everything works on a dir
         DIR* dir = opendir(sourceName);
-        struct dirent* Dirent = NULL;
-        while((Dirent = readdir(dir)) != NULL){
-            //check if this is file or dir
-            struct stat buf;
-            //first figure out its path name and the destination new path name
-            char new_path[100];
-            strcpy(new_path, sourceName);
-            strcat(new_path, "/\0");
-            strcat(new_path, Dirent->d_name);
-            char new_dest[100];
-            strcpy(new_dest, destName);
-            strcat(new_dest, "/\0");
-            strcat(new_dest, Dirent->d_name);
+        if(dir == NULL){
+            syserror(opendir, sourceName);
+        }
+        struct dirent* Dirent;
+        
+        char new_path[4096];
+        char new_dest[4096];
+        while((Dirent = readdir(dir))){
+        
+            bzero(new_path, sizeof(new_path));
+            bzero(new_dest, sizeof(new_dest));
+            sprintf(new_path, "%s/%s", sourceName, Dirent->d_name);
+            sprintf(new_dest, "%s/%s", destName, Dirent->d_name);
             
-            stat(new_path, &buf);
             //if this one is a dir
-            if(S_ISDIR(buf.st_mode)){
-                //create this new dir in dest
-                //first get the permission of the old dir an it is just in buf
-                mkdir(new_dest, buf.st_mode);
+            if(checkDir(new_path) && (new_path[strlen(new_path)-1] != '.')){
                 //recursive call on this dir
                 recursive_cp(new_path, new_dest);
             //if this one if a file
-            }else if(S_ISREG(buf.st_mode)){
-                int successful = file_cp(new_path, new_dest);
-                if(successful == 1){
+            }else if(!checkDir(new_path) && (new_path[strlen(new_path)-1] != '.')){
+                file_cp(new_path, new_dest);
+                /*if(successful == 1){
                     printf("fail to copy file at %s", new_path);
-                }
+                }*/
                 //now copy the permission
             }
+            //free(new_path);
+            //free(new_dest);
         }
-    }
-    
-    
+        
+        chmod(destName, buffer.st_mode);
+        //free(path);
+        closedir(dir);
     
 }
 
@@ -113,9 +142,11 @@ main(int argc, char *argv[])
 	if (argc != 3) {
 		usage();
 	}
-	//TBD();
-        const char* source_name = argv[1];
-        const char* dest_name = argv[2];
+
+        char* source_name = argv[1];
+        //printf("%s", source_name);
+        char* dest_name = argv[2];
+        //printf("%s", dest_name);
         recursive_cp(source_name, dest_name);
         
 	return 0;
