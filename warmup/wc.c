@@ -79,7 +79,10 @@ wc_init(char *word_array, long size)
                 //now update the hash table
                 unsigned long long int index = hashCode(new_word, word_size);
                 //int index = right;
-                if(index == 0) continue;
+                if(index == 0){
+                    free(new_word);
+                    continue;
+                }
                 
                 int place = index % wc->size;
                 
@@ -95,6 +98,7 @@ wc_init(char *word_array, long size)
                 //already exists
                 if(ptr){
                     *(ptr->val) = *(ptr->val) + 1;
+                    free(new_word);
                 //does not exist
                 }else{
                     ptr = (HashNode*)malloc(sizeof(HashNode));
@@ -141,9 +145,13 @@ wc_destroy(struct wc *wc)
             HashNode* ptr = wc->head[i];
             while(ptr->next){
                 HashNode* temp = ptr->next;
+                free(ptr->key);
+                free(ptr->val);
                 free(ptr);
                 ptr = temp;
             }
+            free(ptr->key);
+            free(ptr->val);
             free(ptr);
         }
     }
