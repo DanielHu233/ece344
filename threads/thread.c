@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <ucontext.h>
 #include "thread.h"
 #include "interrupt.h"
@@ -9,49 +10,450 @@ struct wait_queue {
 	/* ... Fill this in Lab 3 ... */
 };
 
+
 /* This is the thread control block */
-struct thread {
-	/* ... Fill this in ... */
+enum{
+    running = 1,
+    ready = 0,
+    exited = 2,
+    uninitialized = 3,
 };
+
+//the thread struct
+typedef struct thread {
+    //thread id
+    Tid t_id;
+    //status
+    int state;
+    //the thread context
+    ucontext_t t_context;
+    //points to the bottom of the thread's stack(used to free up the stack)(free should be called on the 
+    //start of the malloced memory)
+    void* stackPtr;
+    //need a status to record whether the thread yield is in loop
+    int yield_time;
+    //the id of the next ready thread(used to maintain ready queue)
+    int next_ready;
+    
+}thread;
+
+//the structure of the nodes of threads in queues
+typedef struct threadNode {
+    struct thread *threadPtr;
+    struct threadNode *next;
+}t_node;
+
+//the structure of the queues
+typedef struct threadQueue {
+    struct threadNode *head;
+}t_queue;
+
+
+//*********** GLOBALS **************************************************
+//statically allocated thread structs, ready queue resides on it
+thread Tid_array[THREAD_MAX_THREADS];
+//exited queue, stores all the flags indicating whether the thread with id is exited
+int exited_queue[THREAD_MAX_THREADS] = {0};
+//the running thread's id
+int running_t;
+//need the id of the head and tail thread of the ready and exited queue
+int ready_head = -1;
+int ready_tail = -1;
+
+//the queues for ready and exited and the pointer to the running thread
+//thread* running_t;
+//t_queue* ready_queue;
+//t_queue* exited_queue;
+
+//The helper functions that manipulate the queues******************************
+//push a node at the end of the ready queue
+void push_ready_back(Tid target_n){
+    //if the target queue is empty
+    if(ready_head == -1){
+        ready_head = target_n;
+    }else{
+        //not empty
+        int cur = ready_head;
+        while(Tid_array[cur].next_ready != -1){
+            cur = Tid_array[cur].next_ready;
+        }
+        Tid_array[cur].next_ready = target_n;
+    }
+}
+
+//pop a thread node at the front of the queue, return null if queue empty
+//only the thread node is popped, and nothing is destroyed
+int pop_ready_front(){
+    //if empty
+    if(ready_head == -1){
+        return -1;
+    }else{
+        int popped = ready_head;
+        ready_head = Tid_array[ready_head].next_ready;
+        Tid_array[popped].next_ready = -1;
+        return popped;
+    }
+}
+
+//find whether the thread with given id is in the queue, 
+//if yes, return pointer to it, else return null
+int find_ready_node(Tid target_id){
+    int cur = ready_head;
+    while(cur != -1){
+        if(cur == target_id){
+            return cur;
+        }
+        cur = Tid_array[cur].next_ready;
+    }
+    return -1;
+}
+
+//pop the thread node with the given thread id, if correctly popped,
+//return the pointer to it, note that nothing is destroyed, if not found that thread, return NULL
+int pop_ready_id(Tid target_id){
+    int prev = -1;
+    int cur = ready_head;
+    //when the queue is empty
+    if(cur == -1){
+        return -1;
+    }
+    while(cur != -1){
+        if(cur == target_id){
+            //when cur is the first node in queue, just update head
+            if(prev == -1){
+                ready_head = Tid_array[ready_head].next_ready;
+                Tid_array[cur].next_ready = -1;
+                return cur;
+            }else{
+                //when cur is not the first node, now prev is usable******               
+                Tid_array[prev].next_ready = Tid_array[cur].next_ready;
+                Tid_array[cur].next_ready = -1;
+                return cur;
+            }
+        }else{
+            prev = cur;
+            cur = Tid_array[cur].next_ready;
+        }
+    }
+    return -1;
+}
+
+//the helper functions that delete the structs********************************
+//delete the whole thread structure through its pointer
+void delete_thread(thread* target_t){
+    //free out the stack it owns
+    free(target_t->stackPtr);
+    free(target_t);
+}
+
+//delete the thread node
+void delete_t_node(t_node* target_n){
+    target_n->next = NULL;
+    delete_thread(target_n->threadPtr);
+    free(target_n);
+}
+
+//delete things in a whole thread_queue
+void delete_t_queue(t_queue* target_q){
+    t_node* cur = target_q->head;
+    while(cur != NULL){
+        t_node* temp = cur->next;
+        delete_t_node(cur);
+        cur = temp;
+    }
+    target_q->head = NULL;
+    //free(target_q);
+}
+
+//helper function used to free up the exited array
+void clean_up(){
+    //first, set the tid_array back
+    /*t_node* nptr = exited_queue->head;
+    while(nptr != NULL){
+        Tid_array[nptr->threadPtr->t_id] = 0;
+        nptr = nptr->next;
+    }*/
+    
+    
+    //clean up the exited queue, since all things that needs destroy are here 
+    //delete_t_queue(exited_queue);
+    for(int i = 0;i < THREAD_MAX_THREADS;i++){
+        if(exited_queue[i] == 1){
+            free(Tid_array[i].stackPtr);
+            Tid_array[i].stackPtr = NULL;
+            Tid_array[i].next_ready = -1;
+            Tid_array[i].state = uninitialized;
+            Tid_array[i].yield_time = 0;
+        }
+    }
+    
+}
+
+void thread_stub(void(*thread_main)(void*), void* arg){
+    //Tid ret;
+    thread_main(arg);
+    thread_exit();
+}
 
 void
 thread_init(void)
 {
-	/* your optional code here */
+    interrupts_off();
+    //first setup the queues, things are allocated on heap
+    //ready_queue = (t_queue*)malloc(sizeof(t_queue));
+    //ready_queue->head = NULL;
+    //exited_queue = (t_queue*)malloc(sizeof(t_queue));
+    //exited_queue->head = NULL;
+    
+    //initialize the Tid array(at this time no thread exists, hence all zeroes)
+    for(int i = 0;i < THREAD_MAX_THREADS;i++){
+        Tid_array[i].t_id = i;
+        Tid_array[i].state = uninitialized;
+        Tid_array[i].next_ready = -1;
+        Tid_array[i].yield_time = 0;
+        Tid_array[i].stackPtr = NULL;
+        Tid_array[i].t_context.uc_mcontext.gregs[REG_RSP] = (long long int)NULL;
+    }
+    
+    //setup the first(kernel) thread
+    Tid_array[0].state = running;
+    running_t = 0;
+   
+    interrupts_off();
 }
 
 Tid
 thread_id()
 {
-	TBD();
-	return THREAD_INVALID;
+    //return running_t->t_id;
+    return Tid_array[running_t].t_id;
+	//return THREAD_INVALID;
 }
 
 Tid
 thread_create(void (*fn) (void *), void *parg)
 {
-	TBD();
-	return THREAD_FAILED;
+    //first turn off interrupt
+    interrupts_off();
+    //then, find weather there's space for new thread
+    int ret_id = -1;
+    //0 is for the kernel thread 
+    for(int i = 1;i < THREAD_MAX_THREADS;i++){
+        if(Tid_array[i].state == uninitialized || Tid_array[i].state == exited){
+            ret_id = i;
+            break;
+        }
+    }
+    //no space for new thread
+    if(ret_id == -1){
+        interrupts_on();
+        return THREAD_NOMORE;
+    }else{
+        //if the location stands for an exited thread, 
+        //need to clear up the exited thread and create new one on it
+        if(Tid_array[ret_id].state == exited){
+            free(Tid_array[ret_id].stackPtr);
+            Tid_array[ret_id].stackPtr = NULL;
+            Tid_array[ret_id].next_ready = -1;
+            Tid_array[ret_id].state = uninitialized;
+            Tid_array[ret_id].yield_time = 0;
+        }
+        //there's unused thread strcut
+        Tid_array[ret_id].state = ready;
+    }
+    
+    //thread* new_thread = (thread*)malloc(sizeof(thread));
+    /*if(new_thread == NULL){
+        interrupts_on();
+        return THREAD_NOMEMORY;
+    }else{*/
+        //has memory and space available, set the fields of the new thread
+    //Tid_array[ret_id] = 1;
+    //new_thread->t_id = ret_id;
+    //new_thread->state = ready;
+    //new_thread->yield_time = 0;
+    //}
+    
+    //now, try to allocate stack for this new thread
+    void* stack_ptr = malloc(THREAD_MIN_STACK);
+    if(stack_ptr == NULL){
+        interrupts_on();
+        return THREAD_NOMEMORY;
+    }
+    Tid_array[ret_id].stackPtr = stack_ptr;//here, there are memory for the stack so set the stackPtr
+    //copy the context
+    getcontext(&Tid_array[ret_id].t_context);
+    
+    //pc is RIP, sp is RSP, parameters in RDI, RSI**********************************************************
+    //pc
+    Tid_array[ret_id].t_context.uc_mcontext.gregs[REG_RIP] = (long long int)(&thread_stub);
+    //arguments (2)
+    Tid_array[ret_id].t_context.uc_mcontext.gregs[REG_RDI] = (long long int)fn;
+    Tid_array[ret_id].t_context.uc_mcontext.gregs[REG_RSI] = (long long int)parg;
+    //need to point to the top of the malloced space
+    Tid_array[ret_id].t_context.uc_mcontext.gregs[REG_RSP] = (long long int)stack_ptr + THREAD_MIN_STACK - 8;
+    
+    //everything finished, add it to ready queue
+    //if ready queue has no element yet
+    push_ready_back(ret_id);
+    
+    interrupts_on();
+    return ret_id;
 }
 
 Tid
 thread_yield(Tid want_tid)
 {
-	TBD();
-	return THREAD_FAILED;
+    //Note: thread_ANY = -1, thread_Self = -2 defined in thread.h. thread self, invalid and none also defined
+    //first turn off interrupts since we do not want to be bothered in a thread switch
+    interrupts_off();
+    
+    //first do the input checking 
+    //not a valid tid
+    if(want_tid < -2 || want_tid >= THREAD_MAX_THREADS){
+        interrupts_on();
+        return THREAD_INVALID;
+    }else{
+        //input tid is in right bound, however two cases of failure
+        //first, if input tid is any but no other thread is ready, return none
+        if(want_tid == THREAD_ANY && ready_head == -1){
+            interrupts_on();
+            return THREAD_NONE;
+        }
+        //second, if input is tid but tid not found in ready queue, return invalid
+        if(want_tid > -1 && (find_ready_node(want_tid) == -1) && want_tid != running_t){
+            interrupts_on();
+            return THREAD_INVALID;
+        }      
+    }
+    
+    int current_t;
+    //if the current running thread already exited*******************************************************
+    if(Tid_array[running_t].state == exited){
+        if(want_tid == THREAD_ANY){
+            //denote it in the exited queue, so that will be cleaned later
+            exited_queue[running_t] = 1;
+            Tid_array[running_t].next_ready = -1;
+        }
+    }else{
+        //now the input tid is valid and the running thread is not exited, start thread switch
+        //(1) put the caller into the back of the ready queue
+        current_t = running_t;
+        Tid_array[running_t].state = ready;
+        push_ready_back(running_t);
+    }
+    //t_node* new_node = (t_node*)malloc(sizeof(t_node));
+    //new_node->threadPtr = running_t;
+    //new_node->next = NULL;
+    //new_node->threadPtr->state = ready;
+    //running_t = NULL;
+    //push_back(ready_queue, new_node);
+    
+    //the return tid
+    Tid ret_id;  
+    //********************(2) context switching ***********************************************
+    getcontext(&Tid_array[running_t].t_context);
+    //need to check how many times yield tries to happen, notice after the first time, 
+    //the code will jump back to run here and skip the loop
+    if(Tid_array[running_t].yield_time == 0){
+        Tid_array[running_t].yield_time = 1;
+        //now consider different input tid cases and determine the new running thread
+        //if tid is a normal id in ready queue
+        if(want_tid >= 0){
+            //t_node* new_running = pop_id(ready_queue, want_tid);
+            //thread* new_run_t = new_running->threadPtr;
+            //free(new_running);
+            //running_t = new_run_t;
+            //running_t->state = running;
+            //ret_id = running_t->t_id;
+            int popped = pop_ready_id(want_tid);
+            running_t = popped;
+            Tid_array[running_t].state = running;
+            ret_id = running_t;
+        //if is any thread, just use the head of ready queue
+        }else if(want_tid == THREAD_ANY){
+            /*t_node* new_running = pop_front(ready_queue);
+            thread* new_run_t = new_running->threadPtr;
+            free(new_running);
+            running_t = new_run_t;
+            running_t->state = running;
+            ret_id = running_t->t_id;*/
+            int popped = pop_ready_front();
+            running_t = popped;
+            Tid_array[running_t].state = running;
+            ret_id = running_t;
+        //if is thread self
+        }else{
+            //resume the last running thread, which is pointed to by new_node
+            /*t_node* new_running = pop_id(ready_queue, new_node->threadPtr->t_id);
+            thread* new_run_t = new_running->threadPtr;
+            free(new_running);
+            running_t = new_run_t;
+            running_t->state = running;
+            ret_id = running_t->t_id;*/
+            int popped = pop_ready_id(current_t);
+            running_t = popped;
+            Tid_array[running_t].state = running;
+            ret_id = running_t;
+        }
+        
+        
+        //now restore the thread context
+        setcontext(&Tid_array[running_t].t_context);
+        //****************************************************************************************
+    }
+    
+    //reset the yield time back to 0
+    Tid_array[running_t].yield_time = 0;
+    
+    //clean the exited threads
+    clean_up();
+    
+    //finally, enable interrupt and return
+    interrupts_on();
+    return ret_id;
 }
 
 void
 thread_exit()
 {
-	TBD();
+    interrupts_off();
+    //first, check if there are other threads to run
+    //if there are other threads in ready, switch to a new running thread
+    if(ready_head != -1){
+        //first, push the current thread into exit queue and change its state
+        Tid_array[running_t].state = exited;
+        //now, yield to other ready thread
+        //notice, in thread yield, I'll check if the current running thread is in exited state, if yes
+        //put it into exited array instead of ready, so it'll be cleaned up at the end of yield.
+        thread_yield(THREAD_ANY);
+    }else{
+        interrupts_on();
+        exit(0);
+    }
 }
 
 Tid
 thread_kill(Tid tid)
 {
-	TBD();
-	return THREAD_FAILED;
+    interrupts_off();
+    //first check if the tid is valid
+    if(tid < 0 || tid >= THREAD_MAX_THREADS || tid == running_t || (find_ready_node(tid) == -1)){
+        interrupts_on();
+        return THREAD_INVALID;
+    }else{
+        //here, we ensure node with tid is in ready, so move it to exited queue
+        pop_ready_id(tid);
+        
+        //maybe should not destroy it here
+        free(Tid_array[tid].stackPtr);
+        Tid_array[tid].stackPtr = NULL;
+        Tid_array[tid].next_ready = -1;
+        Tid_array[tid].state = uninitialized;
+        Tid_array[tid].yield_time = 0;
+    }
+    interrupts_on();
+    return tid;
 }
 
 /*******************************************************************
@@ -195,7 +597,7 @@ void
 cv_broadcast(struct cv *cv, struct lock *lock)
 {
 	assert(cv != NULL);
-	assert(lock != NULL);
+        assert(lock != NULL);
 
 	TBD();
 }
