@@ -173,8 +173,7 @@ void clean_up(){
         Tid_array[nptr->threadPtr->t_id] = 0;
         nptr = nptr->next;
     }*/
-    
-    
+        
     //clean up the exited queue, since all things that needs destroy are here 
     //delete_t_queue(exited_queue);
     for(int i = 0;i < THREAD_MAX_THREADS;i++){
@@ -262,18 +261,6 @@ thread_create(void (*fn) (void *), void *parg)
         Tid_array[ret_id].state = ready;
     }
     
-    //thread* new_thread = (thread*)malloc(sizeof(thread));
-    /*if(new_thread == NULL){
-        interrupts_on();
-        return THREAD_NOMEMORY;
-    }else{*/
-        //has memory and space available, set the fields of the new thread
-    //Tid_array[ret_id] = 1;
-    //new_thread->t_id = ret_id;
-    //new_thread->state = ready;
-    //new_thread->yield_time = 0;
-    //}
-    
     //now, try to allocate stack for this new thread
     void* stack_ptr = malloc(THREAD_MIN_STACK);
     if(stack_ptr == NULL){
@@ -330,11 +317,11 @@ thread_yield(Tid want_tid)
     int current_t;
     //if the current running thread already exited*******************************************************
     if(Tid_array[running_t].state == exited){
-        if(want_tid == THREAD_ANY){
+        //if(want_tid == THREAD_ANY){
             //denote it in the exited queue, so that will be cleaned later
-            exited_queue[running_t] = 1;
-            Tid_array[running_t].next_ready = -1;
-        }
+        exited_queue[running_t] = 1;
+        Tid_array[running_t].next_ready = -1;
+        //}
     }else{
         //now the input tid is valid and the running thread is not exited, start thread switch
         //(1) put the caller into the back of the ready queue
@@ -446,11 +433,11 @@ thread_kill(Tid tid)
         pop_ready_id(tid);
         
         //maybe should not destroy it here
-        free(Tid_array[tid].stackPtr);
-        Tid_array[tid].stackPtr = NULL;
-        Tid_array[tid].next_ready = -1;
-        Tid_array[tid].state = uninitialized;
-        Tid_array[tid].yield_time = 0;
+        //free(Tid_array[tid].stackPtr);
+        //Tid_array[tid].stackPtr = NULL;
+        //Tid_array[tid].next_ready = -1;
+        Tid_array[tid].state = exited;
+        //Tid_array[tid].yield_time = 0;
     }
     interrupts_on();
     return tid;
