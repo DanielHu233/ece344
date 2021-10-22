@@ -60,11 +60,6 @@ int running_t;
 int ready_head = -1;
 int ready_tail = -1;
 
-//the queues for ready and exited and the pointer to the running thread
-//thread* running_t;
-//t_queue* ready_queue;
-//t_queue* exited_queue;
-
 //The helper functions that manipulate the queues******************************
 //push a node at the end of the ready queue
 void push_ready_back(Tid target_n){
@@ -167,13 +162,6 @@ void delete_t_queue(t_queue* target_q){
 
 //helper function used to free up the exited array
 void clean_up(){
-    //first, set the tid_array back
-    /*t_node* nptr = exited_queue->head;
-    while(nptr != NULL){
-        Tid_array[nptr->threadPtr->t_id] = 0;
-        nptr = nptr->next;
-    }*/
-        
     //clean up the exited queue, since all things that needs destroy are here 
     //delete_t_queue(exited_queue);
     for(int i = 0;i < THREAD_MAX_THREADS;i++){
@@ -198,11 +186,6 @@ void
 thread_init(void)
 {
     interrupts_off();
-    //first setup the queues, things are allocated on heap
-    //ready_queue = (t_queue*)malloc(sizeof(t_queue));
-    //ready_queue->head = NULL;
-    //exited_queue = (t_queue*)malloc(sizeof(t_queue));
-    //exited_queue->head = NULL;
     
     //initialize the Tid array(at this time no thread exists, hence all zeroes)
     for(int i = 0;i < THREAD_MAX_THREADS;i++){
@@ -329,13 +312,6 @@ thread_yield(Tid want_tid)
         Tid_array[running_t].state = ready;
         push_ready_back(running_t);
     }
-    //t_node* new_node = (t_node*)malloc(sizeof(t_node));
-    //new_node->threadPtr = running_t;
-    //new_node->next = NULL;
-    //new_node->threadPtr->state = ready;
-    //running_t = NULL;
-    //push_back(ready_queue, new_node);
-    
     //the return tid
     Tid ret_id;  
     //********************(2) context switching ***********************************************
@@ -347,24 +323,12 @@ thread_yield(Tid want_tid)
         //now consider different input tid cases and determine the new running thread
         //if tid is a normal id in ready queue
         if(want_tid >= 0){
-            //t_node* new_running = pop_id(ready_queue, want_tid);
-            //thread* new_run_t = new_running->threadPtr;
-            //free(new_running);
-            //running_t = new_run_t;
-            //running_t->state = running;
-            //ret_id = running_t->t_id;
             int popped = pop_ready_id(want_tid);
             running_t = popped;
             Tid_array[running_t].state = running;
             ret_id = running_t;
         //if is any thread, just use the head of ready queue
         }else if(want_tid == THREAD_ANY){
-            /*t_node* new_running = pop_front(ready_queue);
-            thread* new_run_t = new_running->threadPtr;
-            free(new_running);
-            running_t = new_run_t;
-            running_t->state = running;
-            ret_id = running_t->t_id;*/
             int popped = pop_ready_front();
             running_t = popped;
             Tid_array[running_t].state = running;
@@ -372,12 +336,6 @@ thread_yield(Tid want_tid)
         //if is thread self
         }else{
             //resume the last running thread, which is pointed to by new_node
-            /*t_node* new_running = pop_id(ready_queue, new_node->threadPtr->t_id);
-            thread* new_run_t = new_running->threadPtr;
-            free(new_running);
-            running_t = new_run_t;
-            running_t->state = running;
-            ret_id = running_t->t_id;*/
             int popped = pop_ready_id(current_t);
             running_t = popped;
             Tid_array[running_t].state = running;
