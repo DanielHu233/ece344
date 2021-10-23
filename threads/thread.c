@@ -6,10 +6,14 @@
 #include "interrupt.h"
 
 /* This is the wait queue structure */
-struct wait_queue {
-	/* ... Fill this in Lab 3 ... */
-};
-
+typedef struct wait_queue {
+    //-1 if nothing in queue
+    int head;
+    int tail;
+    //this is the array that stores the next thread id, the order is maintain as FIFO
+    //if no elements in queue, then nothing in this array(elements initialized to -1)
+    int wait_queue_id[THREAD_MAX_THREADS];
+}wait_queue;
 
 /* This is the thread control block */
 enum{
@@ -34,6 +38,8 @@ typedef struct thread {
     int yield_time;
     //the id of the next ready thread(used to maintain ready queue)
     int next_ready;
+    //the wait queue of this thread
+    wait_queue* wq;
     
 }thread;
 
@@ -160,6 +166,8 @@ void delete_t_queue(t_queue* target_q){
     //free(target_q);
 }
 
+wait_queue* wait_queue_create();
+
 //helper function used to free up the exited array
 void clean_up(){
     //clean up the exited queue, since all things that needs destroy are here 
@@ -177,7 +185,9 @@ void clean_up(){
 }
 
 void thread_stub(void(*thread_main)(void*), void* arg){
-    //Tid ret;
+    //need to turn on this damn interrupt otherwise try move potato fails directly
+    interrupts_on();
+    
     thread_main(arg);
     thread_exit();
 }
@@ -185,7 +195,8 @@ void thread_stub(void(*thread_main)(void*), void* arg){
 void
 thread_init(void)
 {
-    interrupts_off();
+    //interrupts_off();
+    int enable = interrupts_off();
     
     //initialize the Tid array(at this time no thread exists, hence all zeroes)
     for(int i = 0;i < THREAD_MAX_THREADS;i++){
@@ -195,19 +206,23 @@ thread_init(void)
         Tid_array[i].yield_time = 0;
         Tid_array[i].stackPtr = NULL;
         Tid_array[i].t_context.uc_mcontext.gregs[REG_RSP] = (long long int)NULL;
+        Tid_array[i].wq = wait_queue_create();
     }
     
     //setup the first(kernel) thread
     Tid_array[0].state = running;
     running_t = 0;
-   
-    interrupts_off();
+    
+    //restore interrupts state, always do this before return
+    interrupts_set(enable);
 }
 
 Tid
 thread_id()
 {
     //return running_t->t_id;
+    //int enable = interrupts_off();
+
     return Tid_array[running_t].t_id;
 	//return THREAD_INVALID;
 }
@@ -216,7 +231,7 @@ Tid
 thread_create(void (*fn) (void *), void *parg)
 {
     //first turn off interrupt
-    interrupts_off();
+    int enable = interrupts_off();
     //then, find weather there's space for new thread
     int ret_id = -1;
     //0 is for the kernel thread 
@@ -228,7 +243,7 @@ thread_create(void (*fn) (void *), void *parg)
     }
     //no space for new thread
     if(ret_id == -1){
-        interrupts_on();
+        interrupts_set(enable);
         return THREAD_NOMORE;
     }else{
         //if the location stands for an exited thread, 
@@ -247,7 +262,7 @@ thread_create(void (*fn) (void *), void *parg)
     //now, try to allocate stack for this new thread
     void* stack_ptr = malloc(THREAD_MIN_STACK);
     if(stack_ptr == NULL){
-        interrupts_on();
+        interrupts_set(enable);
         return THREAD_NOMEMORY;
     }
     Tid_array[ret_id].stackPtr = stack_ptr;//here, there are memory for the stack so set the stackPtr
@@ -267,7 +282,7 @@ thread_create(void (*fn) (void *), void *parg)
     //if ready queue has no element yet
     push_ready_back(ret_id);
     
-    interrupts_on();
+    interrupts_set(enable);
     return ret_id;
 }
 
@@ -276,23 +291,23 @@ thread_yield(Tid want_tid)
 {
     //Note: thread_ANY = -1, thread_Self = -2 defined in thread.h. thread self, invalid and none also defined
     //first turn off interrupts since we do not want to be bothered in a thread switch
-    interrupts_off();
+    int enable = interrupts_off();
     
     //first do the input checking 
     //not a valid tid
     if(want_tid < -2 || want_tid >= THREAD_MAX_THREADS){
-        interrupts_on();
+        interrupts_set(enable);
         return THREAD_INVALID;
     }else{
         //input tid is in right bound, however two cases of failure
         //first, if input tid is any but no other thread is ready, return none
         if(want_tid == THREAD_ANY && ready_head == -1){
-            interrupts_on();
+            interrupts_set(enable);
             return THREAD_NONE;
         }
         //second, if input is tid but tid not found in ready queue, return invalid
         if(want_tid > -1 && (find_ready_node(want_tid) == -1) && want_tid != running_t){
-            interrupts_on();
+            interrupts_set(enable);
             return THREAD_INVALID;
         }      
     }
@@ -355,25 +370,30 @@ thread_yield(Tid want_tid)
     clean_up();
     
     //finally, enable interrupt and return
-    interrupts_on();
+    interrupts_set(enable);
     return ret_id;
 }
+
+int
+thread_wakeup(struct wait_queue *queue, int all);
 
 void
 thread_exit()
 {
-    interrupts_off();
-    //first, check if there are other threads to run
+    int enable = interrupts_off();
+    //first thing to do now is wake up the threads that wait on this thread
+    thread_wakeup(Tid_array[running_t].wq, 1);
+    //check if there are other threads to run
     //if there are other threads in ready, switch to a new running thread
     if(ready_head != -1){
-        //first, push the current thread into exit queue and change its state
+        //push the current thread into exit queue and change its state
         Tid_array[running_t].state = exited;
         //now, yield to other ready thread
         //notice, in thread yield, I'll check if the current running thread is in exited state, if yes
         //put it into exited array instead of ready, so it'll be cleaned up at the end of yield.
         thread_yield(THREAD_ANY);
     }else{
-        interrupts_on();
+        interrupts_set(enable);
         exit(0);
     }
 }
@@ -381,23 +401,19 @@ thread_exit()
 Tid
 thread_kill(Tid tid)
 {
-    interrupts_off();
+    int enable = interrupts_off();
     //first check if the tid is valid
-    if(tid < 0 || tid >= THREAD_MAX_THREADS || tid == running_t || (find_ready_node(tid) == -1)){
-        interrupts_on();
+    if(tid < 0 || tid >= THREAD_MAX_THREADS || tid == running_t || Tid_array[tid].state == uninitialized){
+        interrupts_set(enable);
         return THREAD_INVALID;
     }else{
-        //here, we ensure node with tid is in ready, so move it to exited queue
+        //here, we ensure node with tid is in ready, so move it to exited queue and wakeup threads 
+        //sleeping on it
+        thread_wakeup(Tid_array[tid].wq, 1);
         pop_ready_id(tid);
-        
-        //maybe should not destroy it here
-        //free(Tid_array[tid].stackPtr);
-        //Tid_array[tid].stackPtr = NULL;
-        //Tid_array[tid].next_ready = -1;
         Tid_array[tid].state = exited;
-        //Tid_array[tid].yield_time = 0;
     }
-    interrupts_on();
+    interrupts_set(enable);
     return tid;
 }
 
@@ -409,28 +425,164 @@ thread_kill(Tid tid)
 struct wait_queue *
 wait_queue_create()
 {
-	struct wait_queue *wq;
+    int enable = interrupts_off();
+    struct wait_queue *wq;
 
-	wq = malloc(sizeof(struct wait_queue));
-	assert(wq);
-
-	TBD();
-
-	return wq;
+    wq = malloc(sizeof(struct wait_queue));
+    assert(wq);
+    //initialize all thing to -1 indicating nothing in the queue
+    wq->head = -1;
+    wq->tail = -1;
+    for(int i = 0;i < THREAD_MAX_THREADS;i++){
+        wq->wait_queue_id[i] = -1;
+    }
+    
+    interrupts_set(enable);
+    return wq;
 }
 
 void
 wait_queue_destroy(struct wait_queue *wq)
 {
-	TBD();
-	free(wq);
+    int enable = interrupts_off();
+    //nothing malloced so just free wq
+    free(wq);
+    interrupts_set(enable);
+}
+
+//wait queue helper functions*********************************************
+//push a thread id into the specified wait queue
+void enqueue_wait(wait_queue* wq, int Tid){
+    int enable = interrupts_off();
+    //if the wait queue is empty
+    if(wq->head == -1){
+        wq->head = Tid;
+        wq->tail = Tid;
+        wq->wait_queue_id[0] = Tid;
+        interrupts_set(enable);
+    }else{
+        //queue not empty
+        wq->tail = Tid;
+        int location = 0;
+        while(wq->wait_queue_id[location] != -1){
+            location++;
+        }
+        wq->wait_queue_id[location] = Tid;
+        interrupts_set(enable);
+    }
+}
+
+//pop the head of the wait queue, if success return the id of popped, not success(empty queue), return -1
+int pop_front_wait(wait_queue* wq){
+    int enable = interrupts_off();
+    //wait queue already empty
+    if(wq->head == -1){
+        interrupts_set(enable);
+        return -1;
+    }else{
+        //only one element in the wait queue
+        if(wq->head == wq->tail){
+            int popped = wq->head;
+            wq->head = -1;
+            wq->tail = -1;
+            wq->wait_queue_id[0] = -1;
+            interrupts_set(enable);
+            return popped;
+        //more than one element in the wq
+        }else{
+            int popped = wq->head;
+            wq->head = wq->wait_queue_id[1];
+            int fast = 1;
+            int slow = 0;
+            //to update the array of Tid in wait queue
+            while(wq->wait_queue_id[fast] != -1){
+                wq->wait_queue_id[slow] = wq->wait_queue_id[fast];
+                slow++;
+                fast++;
+            }
+            wq->wait_queue_id[slow] = -1;
+            
+            interrupts_set(enable);
+            return popped;
+        }
+    }
+}
+
+//moves all the threads in this wait queue to ready queue, returns the number of removed threads
+//if the thread in the waiting queue is already killed, do not put it into ready
+int move_to_ready_all(wait_queue* wq){
+    int enable = interrupts_off();
+    //wait queue already empty
+    if(wq->head == -1){
+        interrupts_set(enable);
+        return 0;
+    }else{
+        int count = 0;
+        int num_waked = 0;
+        while(wq->wait_queue_id[count] != -1){
+            //only when this thread in the wait queue is not killed, will he be moved to ready
+            if(Tid_array[wq->wait_queue_id[count]].state != exited){
+                push_ready_back(wq->wait_queue_id[count]);
+                Tid_array[wq->wait_queue_id[count]].state = ready;
+                wq->wait_queue_id[count] = -1;
+                num_waked++;
+            }else{
+                //already killed, so just remove him from waiting kill 
+                wq->wait_queue_id[count] = -1;
+            }
+            count++;
+        }
+        wq->head = -1;
+        wq->tail = -1;
+        interrupts_set(enable);
+        return count;
+    }
 }
 
 Tid
 thread_sleep(struct wait_queue *queue)
 {
-	TBD();
-	return THREAD_FAILED;
+    int enable = interrupts_off();
+    
+    //first do the validity check
+    //invalid queue
+    if(queue == NULL){
+        interrupts_set(enable);
+        return THREAD_INVALID;
+    //no threads available
+    }else if(ready_head == -1){
+        interrupts_set(enable);
+        return THREAD_NONE;
+    }
+    
+    //now, everything valid, first insert the current thread into wait queue
+    enqueue_wait(queue, running_t);
+    //then, pick the next thread to run from the ready queue
+    int next_run = pop_ready_front();
+    
+    //finally switch to the thread with id next_run
+    //********************(2) context switching ***********************************************
+    getcontext(&Tid_array[running_t].t_context);
+    //need to check how many times yield tries to happen, notice after the first time, 
+    //the code will jump back to run here and skip the loop
+    if(Tid_array[running_t].yield_time == 0){
+        Tid_array[running_t].yield_time = 1;
+        //tid is a normal id in ready queue
+        running_t = next_run;
+        Tid_array[running_t].state = running;
+        //now restore the thread context
+        setcontext(&Tid_array[running_t].t_context);
+        //****************************************************************************************
+    }    
+    //reset the yield time back to 0
+    Tid_array[running_t].yield_time = 0;
+    
+    //clean the exited threads
+    clean_up();
+    
+    //finally, enable interrupt and return
+    interrupts_set(enable);
+    return next_run;
 }
 
 /* when the 'all' parameter is 1, wakeup all threads waiting in the queue.
@@ -438,20 +590,64 @@ thread_sleep(struct wait_queue *queue)
 int
 thread_wakeup(struct wait_queue *queue, int all)
 {
-	TBD();
-	return 0;
+    int enable = interrupts_off();
+    
+    //first do the validity check
+    //invalid queue
+    if(queue == NULL){
+        interrupts_set(enable);
+        return 0;
+    }
+    
+    //if the wait queue is empty, return 0
+    if(queue->head == -1){
+        interrupts_set(enable);
+        return 0;
+    }
+    
+    //now if all is 0
+    if(all == 0){
+        //first remove the head of the wait queue
+        int waked = pop_front_wait(queue);
+        //then, push this id into ready queue and change its state to ready
+        push_ready_back(waked);
+        Tid_array[waked].state = ready;
+        
+        interrupts_set(enable);
+        return 1;
+    }else{
+        int result = move_to_ready_all(queue);
+        interrupts_set(enable);
+        return result;
+    }
 }
 
 /* suspend current thread until Thread tid exits */
 Tid
 thread_wait(Tid tid)
 {
-	TBD();
-	return 0;
+    int enable = interrupts_off();
+    
+    //first check validity of tid
+    if(tid < 0 || tid >= THREAD_MAX_THREADS || tid == running_t || 
+            Tid_array[tid].state == exited || Tid_array[tid].state == uninitialized){
+        interrupts_set(enable);
+        return THREAD_INVALID;
+    }
+    
+    //now, the tid is valid
+    //sleep the current thread on wait queue of tid
+    thread_sleep(Tid_array[tid].wq);
+    //notice when the thread with tid terminates(call exit), staff needs to be handled in thread_exit
+    //and here, we just safely return 
+    interrupts_set(enable);
+    return tid;
 }
 
 struct lock {
-	/* ... Fill this in ... */
+    //the wait queue on this lock
+    wait_queue*  lock_queue;
+    int acquired;
 };
 
 struct lock *
@@ -462,7 +658,9 @@ lock_create()
 	lock = malloc(sizeof(struct lock));
 	assert(lock);
 
-	TBD();
+	lock->acquired = 0;
+        lock->lock_queue = wait_queue_create();
+        
 
 	return lock;
 }
@@ -472,7 +670,7 @@ lock_destroy(struct lock *lock)
 {
 	assert(lock != NULL);
 
-	TBD();
+	wait_queue_destroy(lock->lock_queue);
 
 	free(lock);
 }
@@ -480,69 +678,100 @@ lock_destroy(struct lock *lock)
 void
 lock_acquire(struct lock *lock)
 {
-	assert(lock != NULL);
-
-	TBD();
+	//the blocking lock needs interrupt disabling
+        int enable = interrupts_off();
+        while(lock->acquired == 1){
+            thread_sleep(lock->lock_queue);
+        }
+        
+        //now lock is free, acquire the lock
+        lock->acquired = 1;
+        interrupts_set(enable);
 }
 
 void
 lock_release(struct lock *lock)
 {
-	assert(lock != NULL);
-
-	TBD();
+    int enable = interrupts_off();
+    lock->acquired = 0;
+    //when the lock is released, blocking lock should wake up all the threads on its queue
+    thread_wakeup(lock->lock_queue, 1);
+    interrupts_set(enable);
 }
 
 struct cv {
-	/* ... Fill this in ... */
+    wait_queue* wq;
 };
 
 struct cv *
 cv_create()
 {
+        int enable = interrupts_off();
 	struct cv *cv;
 
 	cv = malloc(sizeof(struct cv));
 	assert(cv);
 
-	TBD();
-
+	cv->wq = wait_queue_create();
+        
+        interrupts_set(enable);
 	return cv;
 }
 
 void
 cv_destroy(struct cv *cv)
 {
-	assert(cv != NULL);
-
-	TBD();
-
-	free(cv);
+    int enable = interrupts_off();	
+    assert(cv != NULL);
+    
+    wait_queue_destroy(cv->wq);
+    
+    interrupts_set(enable);
+    free(cv);
 }
 
 void
 cv_wait(struct cv *cv, struct lock *lock)
 {
-	assert(cv != NULL);
-	assert(lock != NULL);
+    int enable = interrupts_off();
+    assert(cv != NULL);
+    assert(lock != NULL);
+    if(lock->acquired == 1){
+        //first release
+        lock_release(lock);
+        //then, sleep
+        thread_sleep(cv->wq);
+        //now, signaled, so reacquire lock
+        lock_acquire(lock);
+    }
 
-	TBD();
+    interrupts_set(enable);
 }
 
 void
 cv_signal(struct cv *cv, struct lock *lock)
 {
-	assert(cv != NULL);
-	assert(lock != NULL);
+    int enable = interrupts_off();
+    assert(cv != NULL);
+    assert(lock != NULL);
+    
+    if(lock->acquired == 1){
+        thread_wakeup(cv->wq, 0);
+    }
 
-	TBD();
+    interrupts_set(enable);
 }
 
 void
 cv_broadcast(struct cv *cv, struct lock *lock)
 {
-	assert(cv != NULL);
-        assert(lock != NULL);
+    int enable = interrupts_off();
+    assert(cv != NULL);
+    assert(lock != NULL);
 
-	TBD();
+    if(lock->acquired == 1){
+        thread_wakeup(cv->wq, 1);
+    }
+    
+    interrupts_set(enable);
 }
